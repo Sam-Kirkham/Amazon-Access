@@ -6,6 +6,7 @@ library(DataExplorer)
 library(GGally)
 library(patchwork)
 library(glmnet)
+library(discrim)
 
 ############################################################################
 
@@ -38,12 +39,6 @@ trainData <- vroom("train.csv") %>%
 ############################################################################
 
 # Recipe
-# my_recipe <- recipe(ACTION ~., data=trainData) %>%
-#   step_mutate_at(all_predictors(), fn = factor) %>%
-#   step_other(all_nominal_predictors(), threshold = .01) %>% 
-#   # step_dummy(all_nominal_predictors()) %>%
-#   step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
-#   step_normalize(all_numeric_predictors())
 
 my_recipe <- recipe(ACTION ~ ., data = trainData) %>%
   step_mutate_at(all_nominal_predictors(), fn = factor) %>%
@@ -73,67 +68,67 @@ amazon_predictions <- predict(logreg_wf,
 ############################################################################
 
 # Penalized Logistic Regression
-# 
-# penalized_logistic <- logistic_reg(mixture=tune(), penalty=tune()) %>%
-#   set_engine("glmnet")
-# 
-# amazon_workflow <- workflow() %>%
-#   add_recipe(my_recipe) %>%
-#   add_model(penalized_logistic)
-# tuning_grid <- grid_regular(penalty(),
-#                             mixture(),
-#                             levels = 5)
-# 
-# folds <- vfold_cv(trainData, v = 5, repeats=1)
-# 
-# CV_results <- amazon_workflow %>%
-#     tune_grid(resamples=folds,
-#             grid=tuning_grid,
-#             metrics=metric_set(roc_auc))
-# 
-# bestTune <- CV_results %>%
-#   select_best(metric = "roc_auc")
-# 
-# final_wf <- amazon_workflow %>%
-#   finalize_workflow(bestTune) %>%
-#   fit(data=trainData)
-# 
-# amazon_predictions <- final_wf %>%
-#   predict(new_data = testData, type= 'prob')
+
+penalized_logistic <- logistic_reg(mixture=tune(), penalty=tune()) %>%
+  set_engine("glmnet")
+
+amazon_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(penalized_logistic)
+tuning_grid <- grid_regular(penalty(),
+                            mixture(),
+                            levels = 5)
+
+folds <- vfold_cv(trainData, v = 5, repeats=1)
+
+CV_results <- amazon_workflow %>%
+    tune_grid(resamples=folds,
+            grid=tuning_grid,
+            metrics=metric_set(roc_auc))
+
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+final_wf <- amazon_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=trainData)
+
+amazon_predictions <- final_wf %>%
+  predict(new_data = testData, type= 'prob')
 
 
 ############################################################################
 
-# # Binary Random Forests
-# RF_Binary_mod <- rand_forest(mtry = tune(),
-#                       min_n=tune(),
-#                       trees=500) %>%
-#   set_engine("ranger") %>%
-#   set_mode("classification")
-# 
-# RF_Binary_workflow <- workflow() %>%
-#   add_recipe(my_recipe) %>%
-#   add_model(RF_Binary_mod)
-# tuning_grid <- grid_regular(mtry(range = c(1, 9)),
-#                             min_n(),
-#                             levels = 5)
-# 
-# folds <- vfold_cv(trainData, v = 5, repeats=1)
-# 
-# CV_results <- RF_Binary_workflow %>%
-#   tune_grid(resamples=folds,
-#             grid=tuning_grid,
-#             metrics=metric_set(roc_auc, f_meas, sens, recall, precision, accuracy))
-# 
-# bestTune <- CV_results %>%
-#   select_best(metric = "roc_auc")
-# 
-# final_wf <- RF_Binary_workflow %>%
-#   finalize_workflow(bestTune) %>%
-#   fit(data=trainData)
-# 
-# amazon_predictions <- final_wf %>%
-#   predict(new_data = testData, type= 'prob')
+# Binary Random Forests
+RF_Binary_mod <- rand_forest(mtry = tune(),
+                      min_n=tune(),
+                      trees=500) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+RF_Binary_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(RF_Binary_mod)
+tuning_grid <- grid_regular(mtry(range = c(1, 9)),
+                            min_n(),
+                            levels = 5)
+
+folds <- vfold_cv(trainData, v = 5, repeats=1)
+
+CV_results <- RF_Binary_workflow %>%
+  tune_grid(resamples=folds,
+            grid=tuning_grid,
+            metrics=metric_set(roc_auc, f_meas, sens, recall, precision, accuracy))
+
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+final_wf <- RF_Binary_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=trainData)
+
+amazon_predictions <- final_wf %>%
+  predict(new_data = testData, type= 'prob')
 
 ############################################################################
 
@@ -169,13 +164,46 @@ amazon_predictions <- final_wf %>%
 
 ############################################################################
 
+# Naive Bayes
+
+nb_model <- naive_Bayes(Laplace=tune(), smoothness=tune()) %>%
+  set_mode("classification") %>%
+  set_engine("naivebayes") 
+nb_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(nb_model)
+
+# Tune smoothness and Laplace here
+tuning_grid <- grid_regular(Laplace(),
+                            smoothness(),
+                            levels = 5)
+
+folds <- vfold_cv(trainData, v = 5, repeats=1)
+
+CV_results <- nb_wf %>%
+  tune_grid(resamples=folds,
+            grid=tuning_grid,
+            metrics=metric_set(roc_auc))
+
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+final_wf <- nb_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=trainData)
+
+amazon_predictions <- final_wf %>%
+  predict(new_data = testData, type= 'prob')
+
+############################################################################
+
 submission <- amazon_predictions %>%
   bind_cols(testData) %>%
     select(id, .pred_1) %>%
     rename(ACTION = .pred_1) %>%
     rename(ID = id)
   
-vroom_write(submission, file = "./AmazonPreds_Batch.csv", delim = ",")
+vroom_write(submission, file = "./AmazonPreds.csv", delim = ",")
 
 # FileZIlla: sftp://stat-u01.byu.edu
 # Run a batch on the Stat Servers,R CMD BATCH --no-save --no-restore AmazonAcess.R &
