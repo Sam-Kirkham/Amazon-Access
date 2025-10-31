@@ -263,41 +263,36 @@ bakedData <- bake(prep, new_data = testData)
 
 # Support Vector Machines
 
-svmPoly <- svm_poly(degree=tune(), cost=tune()) %>% 
+amazon_recipe <- recipe(ACTION ~ ., data = trainData) %>%
+  step_mutate_at(all_numeric_predictors(), fn = factor) %>%
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_pca(all_predictors(), threshold=0.99) %>%
+  step_downsample(ACTION)
+
+svm_rbf_model <- svm_rbf(rbf_sigma = 0.177, cost = 0.00316) %>%
   set_mode("classification") %>%
   set_engine("kernlab")
 
-svmRadial <- svm_rbf(rbf_sigma=tune(), cost=tune()) %>% 
+svm_poly_model <- svm_poly(degree = 1, cost = 0.0131) %>%
   set_mode("classification") %>%
   set_engine("kernlab")
 
-svmLinear <- svm_linear(cost=tune()) %>% 
+svm_linear_model <- svm_linear(cost = 0.0131) %>%
   set_mode("classification") %>%
   set_engine("kernlab")
 
 svm_wf <- workflow() %>%
-  add_recipe(my_recipe) %>%
-  add_model(svmLinear)
-
-tuning_grid <- grid_regular(cost(),
-                            levels = 5)
-
-folds <- vfold_cv(trainData, v = 5, repeats=1)
-
-CV_results <- svm_wf %>%
-  tune_grid(resamples=folds,
-            grid=tuning_grid,
-            metrics=metric_set(roc_auc))
-
-bestTune <- CV_results %>%
-  select_best(metric = "roc_auc")
+  add_recipe(amazon_recipe) %>%
+  add_model(svm_linear_model)
 
 final_wf <- svm_wf %>%
-  finalize_workflow(bestTune) %>%
   fit(data=trainData)
 
 amazon_predictions <- final_wf %>%
   predict(new_data = testData, type= 'prob')
+
 
 ############################################################################
 
@@ -308,9 +303,9 @@ my_recipe <- recipe(ACTION ~., data=trainData) %>%
   step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
   step_normalize(all_nominal_predictors()) %>%
   # only one of those
-  step_smote(all_outcomes(), neighbors = 4)
+  # step_smote(all_outcomes(), neighbors = 4)
   # step_upsample(ACTION)
-  # step_downsample(ACTION)
+  step_downsample(ACTION)
 
 
 prepped_recipe <- prep(my_recipe)
