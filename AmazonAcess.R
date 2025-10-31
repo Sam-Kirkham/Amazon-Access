@@ -7,13 +7,21 @@ library(GGally)
 library(patchwork)
 library(glmnet)
 library(discrim)
+library(kernlab)
+library(themis)
+
+# install.packages("remotes")
+# remotes::install_github("rstudio/tensorflow")
+# reticulate::install_python()
+# keras::install_keras()
+# library(nnet)
 
 ############################################################################
 
 # Reading in the Data
 testData <- vroom("test.csv")
 trainData <- vroom("train.csv") %>%
-  mutate(ACTION = as.factor(ACTION))
+  mutate(ACTION = factor(ACTION))
 
 ############################################################################
 
@@ -41,10 +49,12 @@ trainData <- vroom("train.csv") %>%
 # Recipe
 
 my_recipe <- recipe(ACTION ~ ., data = trainData) %>%
-  step_mutate_at(all_nominal_predictors(), fn = factor) %>%
-  step_other(all_nominal_predictors(), threshold = 0.01) %>%
-  step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
-  step_normalize(all_numeric_predictors())
+  step_mutate_at(all_numeric_predictors(), fn = factor) %>%
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  # step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
+  step_normalize(all_nominal_predictors()) %>%
+  step_pca(all_predictors(), threshold= 0.68)
 
 
 prep <- prep(my_recipe)
@@ -109,6 +119,7 @@ RF_Binary_mod <- rand_forest(mtry = tune(),
 RF_Binary_workflow <- workflow() %>%
   add_recipe(my_recipe) %>%
   add_model(RF_Binary_mod)
+
 tuning_grid <- grid_regular(mtry(range = c(1, 9)),
                             min_n(),
                             levels = 5)
@@ -118,7 +129,7 @@ folds <- vfold_cv(trainData, v = 5, repeats=1)
 CV_results <- RF_Binary_workflow %>%
   tune_grid(resamples=folds,
             grid=tuning_grid,
-            metrics=metric_set(roc_auc, f_meas, sens, recall, precision, accuracy))
+            metrics=metric_set(roc_auc))
 
 bestTune <- CV_results %>%
   select_best(metric = "roc_auc")
@@ -169,6 +180,7 @@ amazon_predictions <- final_wf %>%
 nb_model <- naive_Bayes(Laplace=tune(), smoothness=tune()) %>%
   set_mode("classification") %>%
   set_engine("naivebayes") 
+
 nb_wf <- workflow() %>%
   add_recipe(my_recipe) %>%
   add_model(nb_model)
@@ -176,7 +188,7 @@ nb_wf <- workflow() %>%
 # Tune smoothness and Laplace here
 tuning_grid <- grid_regular(Laplace(),
                             smoothness(),
-                            levels = 5)
+                            levels = 10)
 
 folds <- vfold_cv(trainData, v = 5, repeats=1)
 
@@ -197,6 +209,115 @@ amazon_predictions <- final_wf %>%
 
 ############################################################################
 
+# Neural Network
+
+nn_recipe <- recipe(formula = ACTION ~ ., data = trainData) %>%
+  # update_role(id, new_role = "id") %>%
+  step_mutate(color = as.factor(color)) %>%  # Turn color to factor
+  step_dummy(all_nominal_predictors()) %>%   # Then dummy encode color
+  step_range(all_numeric_predictors(), min = 0, max = 1) # scale to [0,1]
+
+nn_model <- mlp(hidden_units = tune(),
+                epochs = 50) %>%  
+  set_engine("keras") %>%  
+  set_mode("classification")
+
+nn_tuneGrid <- grid_regular(hidden_units(range = c(1, 20)),
+                            levels = 10)
+
+nn_folds <- vfold_cv(trainData, v = 5, repeats=1)
+
+tuned_nn <- nn_wf %>%
+  tune_grid(resamples = nn_folds,
+            grid = nn_tuneGrid,
+            metrics = metric_set(accuracy))
+
+tuned_nn %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  ggplot(aes(x = hidden_units, y = mean)) +
+  geom_line()
+
+final_nn <- nn_wf %>%
+  finalize_workflow(select_best(tuned_nn, "accuracy")) %>%
+  fit(data = trainData)
+
+amazon_predictions <- predict(final_nn, testData) %>%
+  bind_cols(testData %>% select(ACTION))
+
+############################################################################
+
+# PCA
+
+recipe(formula=, data=) %>%
+  ... %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), threshold=) 
+#Threshold is between 0 and 1
+
+prep <- prep(my_recipe)
+bakedData <- bake(prep, new_data = testData)
+
+
+############################################################################
+
+# Support Vector Machines
+
+svmPoly <- svm_poly(degree=tune(), cost=tune()) %>% 
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svmRadial <- svm_rbf(rbf_sigma=tune(), cost=tune()) %>% 
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svmLinear <- svm_linear(cost=tune()) %>% 
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(svmLinear)
+
+tuning_grid <- grid_regular(cost(),
+                            levels = 5)
+
+folds <- vfold_cv(trainData, v = 5, repeats=1)
+
+CV_results <- svm_wf %>%
+  tune_grid(resamples=folds,
+            grid=tuning_grid,
+            metrics=metric_set(roc_auc))
+
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+final_wf <- svm_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=trainData)
+
+amazon_predictions <- final_wf %>%
+  predict(new_data = testData, type= 'prob')
+
+############################################################################
+
+# Imbalanced Data
+my_recipe <- recipe(ACTION ~., data=trainData) %>%
+  step_mutate_at(all_numeric_predictors(), fn = factor) %>%
+  # step_dummy(all_nominal_predictors()) %>%
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
+  step_normalize(all_nominal_predictors()) %>%
+  # only one of those
+  step_smote(all_outcomes(), neighbors = 4)
+  # step_upsample(ACTION)
+  # step_downsample(ACTION)
+
+
+prepped_recipe <- prep(my_recipe)
+baked <- bake(prepped_recipe, new_data = testData)
+
+
+############################################################################
 submission <- amazon_predictions %>%
   bind_cols(testData) %>%
     select(id, .pred_1) %>%
